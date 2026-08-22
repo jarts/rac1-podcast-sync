@@ -1,0 +1,6 @@
+.venv/
+data/
+__pycache__/
+*.pyc
+rac1sync.log
+.DS_Store
