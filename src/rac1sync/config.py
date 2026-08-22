@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from .domain import Rac1SyncError
@@ -20,16 +21,29 @@ class ConfigError(Rac1SyncError):
     """La configuració és absent, mal formada o incoherent."""
 
 
+class TranscriptionServiceType(str, Enum):
+    SoftCatala = "SoftCatala"
+    Olama = "Olama"
+
+
 @dataclass(frozen=True, slots=True)
 class FeedConfig:
     name: str
     url: str
+    transcriptionService: TranscriptionServiceType | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ConfigError("Cada feed necessita un 'name' no buit")
         if not self.url.startswith(("http://", "https://")):
             raise ConfigError(f"URL de feed invàlida per a '{self.name}': {self.url}")
+            
+        if self.transcriptionService is not None and not isinstance(self.transcriptionService, TranscriptionServiceType):
+            try:
+                parsed = TranscriptionServiceType(self.transcriptionService)
+                object.__setattr__(self, "transcriptionService", parsed)
+            except ValueError:
+                raise ConfigError(f"Servei de transcripció no suportat per a '{self.name}': {self.transcriptionService}")
 
 
 @dataclass(frozen=True, slots=True)

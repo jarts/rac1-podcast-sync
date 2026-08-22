@@ -70,12 +70,27 @@ class PodcastSyncService:
             )
             pending = pending[:limit]
 
-        downloaded, failed = self._download_all(pending, feed.name)
+        downloaded, failed, paths = self._download_all(pending, feed.name)
 
         #  L'estat del feed només es desa si tot ha anat bé. Si desem un ETag
         #  havent fallat descàrregues, el 304 següent amagaria els pendents.
         if failed == 0:
             self._repository.save_feed_state(feed.url, snapshot.state)
+            
+        # Transcripcions de les descàrregues completades
+        if feed.transcriptionService and paths:
+            from .transcription import get_transcription_service
+            ts = get_transcription_service(feed.transcriptionService)
+            if ts:
+                logger.info("%s: Iniciant %d transcripcions en segon pla...", feed.name, len(paths))
+                workers = min(self._config.sync.max_concurrent_downloads, len(paths))
+                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="transcription") as t_pool:
+                    futures = [t_pool.submit(ts.transcribe, p) for p in paths]
+                    for tf in futures:
+                        try:
+                            tf.result()
+                        except Exception as e:
+                            logger.error("Error en la transcripció: %s", e)
 
         report = SyncReport(
             feed=feed.name,
@@ -87,11 +102,12 @@ class PodcastSyncService:
         logger.info("%s", report)
         return report
 
-    def _download_all(self, episodes: list[Episode], feed_name: str) -> tuple[int, int]:
+    def _download_all(self, episodes: list[Episode], feed_name: str) -> tuple[int, int, list[Path]]:
         if not episodes:
-            return 0, 0
+            return 0, 0, []
 
         downloaded = failed = 0
+        paths = []
         workers = min(self._config.sync.max_concurrent_downloads, len(episodes))
 
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="download") as pool:
@@ -116,5 +132,6 @@ class PodcastSyncService:
                     episode, feed_name, path, path.stat().st_size
                 )
                 downloaded += 1
+                paths.append(path)
 
-        return downloaded, failed
+        return downloaded, failed, paths

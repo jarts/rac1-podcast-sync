@@ -9,10 +9,11 @@ backoff_base_seconds = 1.0
 user_agent           = "rac1-podcast-sync/1.0 (+correu@exemple.cat)"
 
 [sync]
-max_concurrent_downloads = 2
-max_episodes_per_run     = 0
+max_concurrent_downloads = 1
+max_episodes_per_run     = 1
 interval_minutes         = 60
 
 [[feeds]]
 name = "via-lliure-hora-a-hora"
 url  = "https://api.audioteca.rac1.cat/rss/via-lliure/"
+transcriptionService = "SoftCatala"
