@@ -69,3 +69,7 @@ class FeedError(Rac1SyncError):
 
 class DownloadError(Rac1SyncError):
     """La descàrrega d'un àudio ha fallat de manera no recuperable."""
+
+
+class SummaryError(Rac1SyncError):
+    """El model local no ha pogut resumir la transcripció."""

@@ -16,9 +16,34 @@ max_concurrent_downloads = 2
 max_episodes_per_run     = 0
 interval_minutes         = 60
 
+# Resum del transcrit amb el model local d'Ollama (`ollama serve`).
+# Només s'executa als feeds que tenen 'system_prompt'.
+[summary]
+base_url        = "http://localhost:11434"
+model           = "llama3.1:latest"
+timeout_seconds = 600.0
+temperature     = 0.2
+# Finestra de context. Ollama es queda a 4096 si no s'indica res, massa poc
+# per a un episodi sencer.
+num_ctx         = 16384
+# Els transcrits més llargs es resumeixen per trossos i es fonen després.
+chunk_chars     = 12000
+
 [[feeds]]
 name = "via-lliure-illustres-execrables"
 url  = "https://api.audioteca.rac1.cat/rss/via-lliure/illustres-execrables"
+# SoftCatala | Whisper | Olama
+transcriptionService = "SoftCatala"
+# Instruccions que rep el model en resumir aquest feed. Sense això no es
+# genera cap resum.
+system_prompt = """
+Ets un redactor que resumeix episodis de ràdio en català.
+A partir de la transcripció, escriu en Markdown:
+- un titular d'una línia,
+- 3-6 punts amb les idees principals,
+- els noms propis i les dates que hi surtin.
+No inventis res que no sigui a la transcripció.
+"""
 
 # Descomenta i verifica l'slug amb `make discover-feeds` (vegeu el README).
 # [[feeds]]

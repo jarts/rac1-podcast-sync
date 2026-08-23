@@ -13,7 +13,23 @@ max_concurrent_downloads = 1
 max_episodes_per_run     = 1
 interval_minutes         = 60
 
+[summary]
+base_url        = "http://localhost:11434"
+model           = "llama3.1:latest"
+timeout_seconds = 600.0
+temperature     = 0.2
+num_ctx         = 16384
+chunk_chars     = 12000
+
 [[feeds]]
 name = "via-lliure-hora-a-hora"
 url  = "https://api.audioteca.rac1.cat/rss/via-lliure/"
 transcriptionService = "SoftCatala"
+system_prompt = """
+Ets un redactor que resumeix episodis de ràdio en català.
+A partir de la transcripció, escriu en Markdown:
+- un titular d'una línia,
+- 3-6 punts amb les idees principals,
+- els noms propis i les dates que hi surtin.
+No inventis res que no sigui a la transcripció.
+"""

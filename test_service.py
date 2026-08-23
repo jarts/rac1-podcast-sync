@@ -5,9 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from rac1sync.config import AppConfig, FeedConfig, StorageConfig, SyncConfig
+from rac1sync.config import (
+    AppConfig,
+    FeedConfig,
+    StorageConfig,
+    SyncConfig,
+    TranscriptionServiceType,
+)
 from rac1sync.domain import DownloadError, Episode, FeedSnapshot, FeedState
 from rac1sync.service import PodcastSyncService
+from rac1sync.summarization import summary_path_for
 
 
 def make_episode(n: int) -> Episode:
@@ -64,6 +71,36 @@ class FakeRepository:
         self.states[feed_url] = state
 
 
+class FakeTranscriber:
+    """Escriu un .txt al costat de l'MP3, com fan els serveis reals."""
+
+    def __init__(self, failing: set[str] | None = None) -> None:
+        self.failing = failing or set()
+        self.transcribed: list[str] = []
+
+    def transcribe(self, audio_path: Path) -> Path | None:
+        if audio_path.name in self.failing:
+            return None
+        self.transcribed.append(audio_path.name)
+        txt = audio_path.with_suffix(".txt")
+        txt.write_text(f"transcripció de {audio_path.stem}", encoding="utf-8")
+        return txt
+
+
+class FakeSummarizer:
+    def __init__(self, failing: bool = False) -> None:
+        self.failing = failing
+        self.calls: list[tuple[Path, str]] = []
+
+    def summarize(self, transcript_path: Path, system_prompt: str) -> Path | None:
+        self.calls.append((transcript_path, system_prompt))
+        if self.failing:
+            return None
+        out = summary_path_for(transcript_path)
+        out.write_text("resum", encoding="utf-8")
+        return out
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> AppConfig:
     return AppConfig(
@@ -73,8 +110,26 @@ def config(tmp_path: Path) -> AppConfig:
     )
 
 
-def build(config, reader, downloader, repository) -> PodcastSyncService:
-    return PodcastSyncService(config, reader, downloader, repository)
+def build(config, reader, downloader, repository, summarizer=None) -> PodcastSyncService:
+    return PodcastSyncService(config, reader, downloader, repository, summarizer)
+
+
+def with_transcription(
+    config: AppConfig, tmp_path: Path, system_prompt: str | None
+) -> AppConfig:
+    """Còpia de la config amb un feed que transcriu (i potser resumeix)."""
+    return AppConfig(
+        feeds=(
+            FeedConfig(
+                name="via-lliure",
+                url="https://example.cat/rss",
+                transcriptionService=TranscriptionServiceType.Whisper,
+                system_prompt=system_prompt,
+            ),
+        ),
+        storage=config.storage,
+        sync=config.sync,
+    )
 
 
 def test_descarrega_els_episodis_nous(config, tmp_path):
@@ -171,6 +226,83 @@ def test_respecta_el_limit_per_execucio(config, tmp_path):
     assert report.downloaded == 2
     #  Els més recents primer.
     assert sorted(downloader.downloaded) == ["guid-4", "guid-5"]
+
+
+def test_resumeix_amb_el_system_prompt_del_feed(config, tmp_path, monkeypatch):
+    transcriber = FakeTranscriber()
+    monkeypatch.setattr("rac1sync.service.get_transcription_service", lambda _: transcriber)
+
+    prompt = "Resumeix en català i en 5 punts."
+    amb_resum = with_transcription(config, tmp_path, prompt)
+    summarizer = FakeSummarizer()
+    snapshot = FeedSnapshot(episodes=(make_episode(1),), state=FeedState())
+
+    build(
+        amb_resum, FakeFeedReader(snapshot), FakeDownloader(tmp_path), FakeRepository(), summarizer
+    ).sync_feed(amb_resum.feeds[0])
+
+    assert transcriber.transcribed == ["guid-1.mp3"]
+    assert summarizer.calls == [(tmp_path / "guid-1.txt", prompt)]
+    assert summary_path_for(tmp_path / "guid-1.txt").read_text() == "resum"
+
+
+def test_no_resumeix_si_el_feed_no_te_system_prompt(config, tmp_path, monkeypatch):
+    transcriber = FakeTranscriber()
+    monkeypatch.setattr("rac1sync.service.get_transcription_service", lambda _: transcriber)
+
+    sense_resum = with_transcription(config, tmp_path, None)
+    summarizer = FakeSummarizer()
+    snapshot = FeedSnapshot(episodes=(make_episode(1),), state=FeedState())
+
+    build(
+        sense_resum,
+        FakeFeedReader(snapshot),
+        FakeDownloader(tmp_path),
+        FakeRepository(),
+        summarizer,
+    ).sync_feed(sense_resum.feeds[0])
+
+    assert transcriber.transcribed == ["guid-1.mp3"]
+    assert summarizer.calls == []
+
+
+def test_una_transcripcio_fallida_no_arriba_al_resum(config, tmp_path, monkeypatch):
+    """Sense transcrit no hi ha res a resumir, i la resta d'episodis ha de seguir."""
+    transcriber = FakeTranscriber(failing={"guid-1.mp3"})
+    monkeypatch.setattr("rac1sync.service.get_transcription_service", lambda _: transcriber)
+
+    amb_resum = with_transcription(config, tmp_path, "Resumeix-ho.")
+    summarizer = FakeSummarizer()
+    snapshot = FeedSnapshot(episodes=(make_episode(1), make_episode(2)), state=FeedState())
+
+    report = build(
+        amb_resum, FakeFeedReader(snapshot), FakeDownloader(tmp_path), FakeRepository(), summarizer
+    ).sync_feed(amb_resum.feeds[0])
+
+    #  La descàrrega ha anat bé; només ha fallat la transcripció.
+    assert report.downloaded == 2
+    assert [path.name for path, _ in summarizer.calls] == ["guid-2.txt"]
+
+
+def test_un_resum_fallit_no_tomba_la_sincronitzacio(config, tmp_path, monkeypatch):
+    transcriber = FakeTranscriber()
+    monkeypatch.setattr("rac1sync.service.get_transcription_service", lambda _: transcriber)
+
+    amb_resum = with_transcription(config, tmp_path, "Resumeix-ho.")
+    snapshot = FeedSnapshot(episodes=(make_episode(1),), state=FeedState("W/1"))
+    repository = FakeRepository()
+
+    report = build(
+        amb_resum,
+        FakeFeedReader(snapshot),
+        FakeDownloader(tmp_path),
+        repository,
+        FakeSummarizer(failing=True),
+    ).sync_feed(amb_resum.feeds[0])
+
+    assert report.downloaded == 1
+    assert report.failed == 0
+    assert repository.states["https://example.cat/rss"].etag == "W/1"
 
 
 def test_un_feed_caigut_no_tomba_la_resta(config, tmp_path):

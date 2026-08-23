@@ -9,6 +9,8 @@ from pathlib import Path
 from .config import AppConfig, FeedConfig
 from .domain import DownloadError, Episode, FeedError, SyncReport
 from .ports import AudioDownloader, EpisodeRepository, FeedReader
+from .summarization import SummarizationService, get_summarization_service
+from .transcription import TranscriptionService, get_transcription_service
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +29,13 @@ class PodcastSyncService:
         feed_reader: FeedReader,
         downloader: AudioDownloader,
         repository: EpisodeRepository,
+        summarizer: SummarizationService | None = None,
     ) -> None:
         self._config = config
         self._feed_reader = feed_reader
         self._downloader = downloader
         self._repository = repository
+        self._summarizer = summarizer or get_summarization_service(config.summary)
 
     def sync_all(self) -> list[SyncReport]:
         reports = []
@@ -77,20 +81,9 @@ class PodcastSyncService:
         if failed == 0:
             self._repository.save_feed_state(feed.url, snapshot.state)
             
-        # Transcripcions de les descàrregues completades
+        # Transcripcions (i resums) de les descàrregues completades
         if feed.transcriptionService and paths:
-            from .transcription import get_transcription_service
-            ts = get_transcription_service(feed.transcriptionService)
-            if ts:
-                logger.info("%s: Iniciant %d transcripcions en segon pla...", feed.name, len(paths))
-                workers = min(self._config.sync.max_concurrent_downloads, len(paths))
-                with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="transcription") as t_pool:
-                    futures = [t_pool.submit(ts.transcribe, p) for p in paths]
-                    for tf in futures:
-                        try:
-                            tf.result()
-                        except Exception as e:
-                            logger.error("Error en la transcripció: %s", e)
+            self._transcribe_all(feed, paths)
 
         report = SyncReport(
             feed=feed.name,
@@ -101,6 +94,46 @@ class PodcastSyncService:
         )
         logger.info("%s", report)
         return report
+
+    def _transcribe_all(self, feed: FeedConfig, paths: list[Path]) -> None:
+        transcriber = get_transcription_service(feed.transcriptionService)
+        if transcriber is None:
+            logger.warning(
+                "%s: servei de transcripció no disponible (%s)",
+                feed.name,
+                feed.transcriptionService,
+            )
+            return
+
+        logger.info("%s: Iniciant %d transcripcions en segon pla...", feed.name, len(paths))
+        workers = min(self._config.sync.max_concurrent_downloads, len(paths))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="transcription") as pool:
+            futures = [pool.submit(self._transcribe_one, feed, transcriber, path) for path in paths]
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001 - un episodi no pot tombar el lot
+                    logger.error("Error en la transcripció: %s", exc)
+
+    def _transcribe_one(
+        self, feed: FeedConfig, transcriber: TranscriptionService, audio_path: Path
+    ) -> None:
+        """Transcriu un àudio i, si el feed porta system prompt, en fa el resum.
+
+        Es fa dins del mateix worker perquè el resum depèn del transcrit: així
+        cada episodi avança sencer sense esperar que acabi tot el lot.
+        """
+        transcript = transcriber.transcribe(audio_path)
+        if transcript is None:
+            logger.error("%s: no s'ha pogut transcriure %s", feed.name, audio_path.name)
+            return
+
+        #  Sense system prompt al feed no hi ha res a demanar-li al model.
+        if not feed.system_prompt:
+            return
+
+        if self._summarizer.summarize(transcript, feed.system_prompt) is None:
+            logger.error("%s: no s'ha pogut resumir %s", feed.name, transcript.name)
 
     def _download_all(self, episodes: list[Episode], feed_name: str) -> tuple[int, int, list[Path]]:
         if not episodes:
