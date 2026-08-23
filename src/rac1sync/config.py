@@ -24,6 +24,7 @@ class ConfigError(Rac1SyncError):
 class TranscriptionServiceType(str, Enum):
     SoftCatala = "SoftCatala"
     Olama = "Olama"
+    Whisper = "Whisper"
 
 
 @dataclass(frozen=True, slots=True)
