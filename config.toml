@@ -10,7 +10,7 @@ user_agent           = "rac1-podcast-sync/1.0 (+correu@exemple.cat)"
 
 [sync]
 max_concurrent_downloads = 1
-max_episodes_per_run     = 1
+max_episodes_per_run     = 0
 interval_minutes         = 60
 
 [[feeds]]
